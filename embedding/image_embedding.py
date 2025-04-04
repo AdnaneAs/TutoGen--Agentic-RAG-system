@@ -77,6 +77,7 @@ def embed_image_llava(image_path: str, prompt: str = "Describe this image in det
     # Process an image with LLaVA and generate an embedding vector
     import base64
     from langchain_ollama import ChatOllama
+    from langchain_core.messages import HumanMessage
     
     print(f"\n{'='*80}")
     print(f"DEBUG: STARTING {model} PROCESSING FOR: {image_path}")
@@ -128,12 +129,14 @@ def embed_image_llava(image_path: str, prompt: str = "Describe this image in det
         
         # Initialize LLaVA model through Ollama
         print(f"DEBUG: Creating LLaVA model: {model}")
-        model = ChatOllama(model=model)
+        model_instance = ChatOllama(model=model)
         
         # Process the image with the model
         print("DEBUG: Sending image to LLaVA for processing")
         start_time = datetime.now()
-        response = model.invoke([
+        
+        # Create a proper HumanMessage with image content
+        message_content = [
             {
                 "type": "image_url",
                 "image_url": {
@@ -144,7 +147,11 @@ def embed_image_llava(image_path: str, prompt: str = "Describe this image in det
                 "type": "text",
                 "text": prompt
             }
-        ])
+        ]
+        
+        human_message = HumanMessage(content=message_content)
+        response = model_instance.invoke([human_message])
+        
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         print(f"DEBUG: LLaVA processing completed in {processing_time:.2f} seconds")
@@ -174,14 +181,14 @@ def embed_image_llava(image_path: str, prompt: str = "Describe this image in det
         
         debug_vector(embedding_vector, "Generated embedding")
         
-        # Create metadata with both the description and embedding
+        # Create metadata with both the description and embedding - use model name as string
         metadata = {
             "description": description_text,
             "embedding": embedding_vector,
             "path": image_path,
             "filename": image_filename,
             "prompt": prompt,
-            "model": model,
+            "model": model,  # Store model name as string, not the model object
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "processing_time_seconds": processing_time
         }

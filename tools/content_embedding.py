@@ -18,7 +18,7 @@ if parent_dir not in sys.path:
 
 # Import RAG pipeline and embedding models
 from rag.rag_pipeline import RAGPipeline
-from embedding.image_embedding import get_image_embedding_model
+from embedding.image_embedding import get_image_embedding_model, embed_image_llava
 from embedding.text_embedding import get_text_embedding_model
 from embedding.tables_embedding import get_table_embedding_model, TableEmbedding
 from llama_index.core.schema import Document, ImageDocument
@@ -178,6 +178,11 @@ class ContentEmbedder:
                 if self.rag_pipeline.index is None:
                     self.rag_pipeline.index = self.rag_pipeline.vector_store.to_index()
                 
+                for doc in text_documents[:1]:  # Debug only the first document as an example
+                    if Settings.embed_model:
+                        embedding = Settings.embed_model.get_text_embedding(doc.text)
+                        debug_vector(embedding, f"Text Embedding (page {doc.metadata['page_num']})")
+                
                 self.rag_pipeline.index.insert_nodes(text_documents)
                 
                 return {
@@ -234,6 +239,11 @@ class ContentEmbedder:
                 if self.rag_pipeline.index is None:
                     self.rag_pipeline.index = self.rag_pipeline.vector_store.to_index()
                 
+                for doc in table_documents[:1]:  # Debug only the first document as an example
+                    if Settings.embed_model:
+                        embedding = Settings.embed_model.get_text_embedding(doc.text)
+                        debug_vector(embedding, f"Table Embedding (page {doc.metadata['page_num']}, table {doc.metadata['table_index']})")
+                
                 self.rag_pipeline.index.insert_nodes(table_documents)
                 
                 return {
@@ -261,9 +271,31 @@ class ContentEmbedder:
                 
                 if image_path and os.path.exists(image_path):
                     try:
-                        image_description = self.generate_image_description(image_path)
+                        logger.info(f"Processing image {img_idx+1}/{len(pdf_content.get('images', []))} from page {page_num}")
                         
+                        # Use embed_image_llava to get image description and embedding vector
+                        result = embed_image_llava(
+                            image_path=image_path,
+                            prompt="Describe this image in detail, including any text, diagrams, or visual elements.",
+                            model=self.image_embedding_model
+                        )
+                        
+                        if "error" in result:
+                            logger.warning(f"Error embedding image {image_path}: {result['error']}")
+                            continue
+                        
+                        # Get the description from the result
+                        image_description = result.get("description", "")
+                        logger.info(f"Generated description of {len(image_description)} chars")
+                        
+                        # Create output directory for JSON if it doesn't exist
+                        json_dir = os.path.dirname(image_path)
+                        os.makedirs(json_dir, exist_ok=True)
+                        
+                        # Path for JSON metadata
                         json_path = os.path.splitext(image_path)[0] + ".json"
+                        
+                        # Combine LLaVA result with PDF-specific metadata
                         image_metadata = {
                             "page": page_num,
                             "index": img_idx,
@@ -274,9 +306,18 @@ class ContentEmbedder:
                             "source": pdf_filename
                         }
                         
+                        # Add the embedding if available
+                        if "embedding" in result:
+                            image_metadata["embedding"] = result["embedding"]
+                            # Debug the embedding vector using our debug_vector function
+                            debug_vector(result["embedding"], f"Image Embedding (page {page_num}, image {img_idx})")
+                        
+                        # Save the metadata to JSON
                         with open(json_path, 'w', encoding='utf-8') as json_file:
                             json.dump(image_metadata, json_file, indent=2)
+                            logger.info(f"Image metadata saved to {json_path}")
                         
+                        # Create document for the RAG pipeline
                         doc = Document(
                             text=f"Image Description: {image_description}",
                             metadata={
@@ -289,8 +330,11 @@ class ContentEmbedder:
                             }
                         )
                         image_documents.append(doc)
+                        
                     except Exception as e:
                         logger.warning(f"Error processing image {image_path}: {str(e)}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
             
             Settings.embed_model = get_text_embedding_model(self.text_embedding_model)
             
@@ -310,6 +354,8 @@ class ContentEmbedder:
             
         except Exception as e:
             logger.error(f"Error processing and embedding images: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {"status": "error", "count": 0, "error": str(e)}
     
     def generate_image_description(self, image_path: str) -> str:

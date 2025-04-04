@@ -82,7 +82,13 @@ class RAGPipeline:
                 
                 # Initialize the vector store index if collection has items
                 if self.collection.count() > 0:
-                    self.index = self.vector_store.to_index()
+                    try:
+                        # Using from_vector_store instead of to_index method
+                        from llama_index.core import VectorStoreIndex
+                        self.index = VectorStoreIndex.from_vector_store(self.vector_store)
+                    except Exception as e:
+                        print(f"ERROR: Failed to initialize index from existing collection: {e}")
+                        self.index = None
             except Exception as e:
                 print(f"ERROR: Failed to create/get collection: {e}")
                 self.collection = None

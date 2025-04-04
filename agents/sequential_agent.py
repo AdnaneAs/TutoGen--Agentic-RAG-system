@@ -15,10 +15,13 @@ if parent_dir not in sys.path:
 from tools.pdf_tools import SimplePDFExtractor, SimplePDFSummarizer
 from tools.tutorial_tools import (
     SimpleTutorialPlanner, 
-    SimpleTutorialWriter, 
     SimpleTutorialFormatter, 
     SimpleTutorialImprover
 )
+from tools.content_embedding import ContentEmbedder
+
+# Import Writer Agent
+from agents.writer_agent import WriterReActAgent
 
 # Import RAG pipeline
 from rag.rag_pipeline import RAGPipeline
@@ -65,15 +68,33 @@ class SequentialReActAgent:
             llm_model=llm_model
         )
         
+        # Initialize Content Embedder
+        self.content_embedder = ContentEmbedder(
+            collection_name=collection_name,
+            text_embedding_model=text_embedding_model,
+            image_embedding_model=image_embedding_model,
+            table_embedding_model=table_embedding_model,
+            llm_model=llm_model
+        )
+        
         # Initialize tools
         self.tools = {
             "extract_pdf": SimplePDFExtractor(),
             "summarize_pdf": SimplePDFSummarizer(llm_model),
+            "embed_content": self.content_embedder,
             "plan_tutorial": SimpleTutorialPlanner(llm_model),
-            "write_tutorial": SimpleTutorialWriter(llm_model, self.rag_pipeline),
             "format_tutorial": SimpleTutorialFormatter(llm_model),
             "improve_tutorial": SimpleTutorialImprover(llm_model)
         }
+        
+        # Initialize Writer Agent
+        self.writer_agent = WriterReActAgent(
+            llm_model=llm_model,
+            collection_name=collection_name,
+            text_embedding_model=text_embedding_model,
+            image_embedding_model=image_embedding_model,
+            table_embedding_model=table_embedding_model
+        )
         
         # Import LLM for reasoning
         from langchain_ollama import ChatOllama
@@ -211,6 +232,12 @@ class SequentialReActAgent:
                 
                 return f"PDF summarization complete. Main topics: {', '.join(result.get('overall_summary', {}).get('main_topics', ['None'])[:3])}.{tables_summary}"
             
+            elif current_step == "embed_content":
+                text_count = result.get("text_embedding", {}).get("count", 0)
+                table_count = result.get("table_embedding", {}).get("count", 0)
+                image_count = result.get("image_embedding", {}).get("count", 0)
+                return f"Content embedding complete. Embedded {text_count} text documents, {table_count} tables, and {image_count} images."
+            
             elif current_step == "plan_tutorial":
                 sections = result.get("sections", [])
                 return f"Tutorial planning complete. Created a plan with {len(sections)} sections: {', '.join([s.get('title', '') for s in sections[:3]])}"
@@ -256,6 +283,7 @@ class SequentialReActAgent:
         Available tools:
         - extract_pdf: Extract content from a PDF file
         - summarize_pdf: Summarize the extracted PDF content
+        - embed_content: Embed text, tables, and images into the vector database for RAG
         - plan_tutorial: Plan the structure of a tutorial based on PDF content
         - write_tutorial: Write individual sections of a tutorial based on the plan
         - format_tutorial: Format the tutorial with proper markdown and structure
@@ -276,7 +304,10 @@ class SequentialReActAgent:
             SystemMessage(content="""
             You are an expert tutorial generation agent. You decide the next step in the tutorial generation process.
             Think carefully about what information you have and what information you still need.
-            The typical flow is: extract_pdf → summarize_pdf → plan_tutorial → write_tutorial → format_tutorial → improve_tutorial → finish.
+            The typical flow is: extract_pdf → summarize_pdf → embed_content → plan_tutorial → write_tutorial → format_tutorial → improve_tutorial → finish.
+            
+            After summarizing the PDF content, you should embed the content (text, tables, and images) into the vector database for retrieval during writing.
+            
             Only select finish when all other steps have been completed.
             
             Your output must strictly follow this format:
@@ -313,6 +344,8 @@ class SequentialReActAgent:
             action_input = state["pdf_path"]
         elif action == "summarize_pdf":
             action_input = state["pdf_content"]
+        elif action == "embed_content":
+            action_input = state["pdf_content"]
         elif action == "plan_tutorial":
             # Check if pdf_summary is None or has an error
             if not state["pdf_summary"]:
@@ -333,6 +366,17 @@ class SequentialReActAgent:
                 "pdf_content": state["pdf_content"]
             }
         elif action == "format_tutorial":
+            # Add safety check to handle case where write_tutorial might be missing
+            if "write_tutorial" not in state["tools_results"]:
+                print("Warning: write_tutorial results not found in tools_results.")
+                # Check if there might be a direct result from writer_agent
+                if hasattr(self, 'writer_agent') and hasattr(self.writer_agent, 'last_result'):
+                    print("Using last result from writer_agent instead.")
+                    state["tools_results"]["write_tutorial"] = self.writer_agent.last_result
+                else:
+                    print("No fallback result found. Creating empty sections.")
+                    state["tools_results"]["write_tutorial"] = {"sections": {}}
+                    
             action_input = {
                 "written_sections": state["tools_results"]["write_tutorial"],
                 "pdf_content": state["pdf_content"]
@@ -355,6 +399,19 @@ class SequentialReActAgent:
             Result of the tool execution
         """
         try:
+            # Special handling for write_tutorial action which uses the Writer Agent
+            if action == "write_tutorial":
+                print(f"Delegating writing task to Writer Agent...")
+                tutorial_plan = action_input.get("tutorial_plan", {})
+                pdf_content = action_input.get("pdf_content", {})
+                
+                # Run the Writer Agent and return its result
+                print(f"Writer Agent starting with plan containing {len(tutorial_plan.get('sections', []))} sections")
+                result = self.writer_agent.run(tutorial_plan, pdf_content)
+                print(f"Writer Agent finished with {len(result.get('sections', {}))} written sections")
+                return result
+            
+            # Standard tool execution for other actions
             tool = self.tools[action]
             
             # Call the appropriate method based on the action
@@ -362,16 +419,18 @@ class SequentialReActAgent:
                 return tool.extract(action_input)
             elif action == "summarize_pdf":
                 return tool.summarize(action_input)
+            elif action == "embed_content":
+                print("Embedding PDF content (text, tables, and images) into vector database...")
+                return tool.embed_pdf_content(action_input)
             elif action == "plan_tutorial":
                 return tool.plan(**action_input)
-            elif action == "write_tutorial":
-                return tool.write(**action_input)
             elif action == "format_tutorial":
                 return tool.format(**action_input)
             elif action == "improve_tutorial":
                 return tool.improve(action_input)
             else:
                 return {"error": f"Unrecognized action: {action}"}
+                
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
