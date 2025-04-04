@@ -47,6 +47,7 @@ class WriterReActAgent:
             table_embedding_model: Name of the table embedding model
         """
         self.llm_model = llm_model
+        self.last_result = None  # Track the last result for state management
         
         # Initialize RAG pipeline
         self.rag_pipeline = RAGPipeline(
@@ -131,10 +132,15 @@ class WriterReActAgent:
             })
         
         # Return all written sections
-        return {
+        final_result = {
             "title": tutorial_plan.get("title", "Tutorial"),
             "sections": state["written_sections"]
         }
+        
+        # Store the last result for potential retrieval by the sequential agent
+        self.last_result = final_result
+        
+        return final_result
     
     def _observe(self, state: Dict[str, Any]) -> str:
         """

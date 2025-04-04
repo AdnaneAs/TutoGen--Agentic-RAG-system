@@ -176,7 +176,9 @@ class ContentEmbedder:
             
             if text_documents:
                 if self.rag_pipeline.index is None:
-                    self.rag_pipeline.index = self.rag_pipeline.vector_store.to_index()
+                    # Use VectorStoreIndex.from_vector_store() instead of to_index()
+                    from llama_index.core import VectorStoreIndex
+                    self.rag_pipeline.index = VectorStoreIndex.from_vector_store(self.rag_pipeline.vector_store)
                 
                 for doc in text_documents[:1]:  # Debug only the first document as an example
                     if Settings.embed_model:
@@ -237,7 +239,9 @@ class ContentEmbedder:
             
             if table_documents:
                 if self.rag_pipeline.index is None:
-                    self.rag_pipeline.index = self.rag_pipeline.vector_store.to_index()
+                    # Use VectorStoreIndex.from_vector_store() instead of to_index()
+                    from llama_index.core import VectorStoreIndex
+                    self.rag_pipeline.index = VectorStoreIndex.from_vector_store(self.rag_pipeline.vector_store)
                 
                 for doc in table_documents[:1]:  # Debug only the first document as an example
                     if Settings.embed_model:
@@ -340,7 +344,9 @@ class ContentEmbedder:
             
             if image_documents:
                 if self.rag_pipeline.index is None:
-                    self.rag_pipeline.index = self.rag_pipeline.vector_store.to_index()
+                    # Use VectorStoreIndex.from_vector_store() instead of to_index()
+                    from llama_index.core import VectorStoreIndex
+                    self.rag_pipeline.index = VectorStoreIndex.from_vector_store(self.rag_pipeline.vector_store)
                 
                 self.rag_pipeline.index.insert_nodes(image_documents)
                 

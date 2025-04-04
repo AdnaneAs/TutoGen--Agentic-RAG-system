@@ -78,7 +78,9 @@ class SimpleTutorialPlanner:
         
         {tables_info}
         
-        Based on this information, please develop a structured, pedagogically sound tutorial plan that effectively teaches these concepts.
+        Based on this information, please develop a structured, pedagogically sound tutorial plan with CLEAR HEADINGS and WELL-DEFINED SECTIONS that effectively teaches these concepts. 
+        The tutorial structure should be concrete with specific section headings (not generic ones like "Main Topic 1").
+        Each section should have a clear purpose and progression to facilitate learning.
         """
         
         response = llm.invoke([

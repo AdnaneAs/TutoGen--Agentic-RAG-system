@@ -77,6 +77,9 @@ class SequentialReActAgent:
             llm_model=llm_model
         )
         
+        # Add a completed_actions tracker
+        self.completed_actions = set()
+        
         # Initialize tools
         self.tools = {
             "extract_pdf": SimplePDFExtractor(),
@@ -84,7 +87,8 @@ class SequentialReActAgent:
             "embed_content": self.content_embedder,
             "plan_tutorial": SimpleTutorialPlanner(llm_model),
             "format_tutorial": SimpleTutorialFormatter(llm_model),
-            "improve_tutorial": SimpleTutorialImprover(llm_model)
+            "improve_tutorial": SimpleTutorialImprover(llm_model),
+            "write_tutorial": None  # This is handled specially via the writer_agent, but needs to be in the tools list
         }
         
         # Initialize Writer Agent
@@ -116,24 +120,24 @@ class SequentialReActAgent:
             "pdf_path": pdf_path,
             "goal": goal,
             "current_step": "initialize",
+            "current_action": None,
             "history": [],
             "tools_results": {},
             "final_tutorial": "",
             "tutorial_plan": {},
             "pdf_content": None,
-            "pdf_summary": None
+            "pdf_summary": None,
+            "completed_actions": self.completed_actions  # Track completed actions in state
         }
-        
-        # Define the ReAct loop
-        max_iterations = 12  # Safety limit to prevent infinite loops
-        current_iteration = 0
         
         # Start the ReAct loop
         print(f"======= Starting ReAct Agent for Tutorial Generation =======")
         print(f"Goal: {goal}")
         print(f"PDF Path: {pdf_path}")
         
-        while current_iteration < max_iterations:
+        current_iteration = 0
+        
+        while True:
             current_iteration += 1
             print(f"\n----- Iteration {current_iteration} -----")
             
@@ -150,6 +154,18 @@ class SequentialReActAgent:
             if next_action == "finish":
                 print(f"Agent determined the task is complete.")
                 break
+            
+            # Detect planning loop and enforce progression if needed
+            if next_action == "plan_tutorial" and "plan_tutorial" in state["completed_actions"]:
+                print("Note: Agent tried to plan the tutorial again. Enforcing progression to write_tutorial.")
+                next_action = "write_tutorial"
+                action_input = {
+                    "tutorial_plan": state["tutorial_plan"],
+                    "pdf_content": state["pdf_content"]
+                }
+            
+            # Record the current action
+            state["current_action"] = next_action
             
             # 3. Act: Execute a tool
             if next_action in self.tools:
@@ -176,6 +192,10 @@ class SequentialReActAgent:
                     state["tutorial_plan"] = result
                 elif next_action == "improve_tutorial":
                     state["final_tutorial"] = result.get("improved_content", "")
+                
+                # Track completed actions
+                state["completed_actions"].add(next_action)
+                self.completed_actions.add(next_action)
             else:
                 print(f"Unknown action: {next_action}")
                 state["history"].append({
@@ -194,10 +214,6 @@ class SequentialReActAgent:
             "extracted_knowledge": state.get("pdf_summary", {}),
             "pdf_content": state.get("pdf_content", {})
         }
-        
-        # If we reached max iterations without finishing, add a note
-        if current_iteration >= max_iterations:
-            final_result["warning"] = "Maximum iterations reached without completing the task."
         
         return final_result
     
@@ -270,7 +286,25 @@ class SequentialReActAgent:
         """
         from langchain.schema import HumanMessage, SystemMessage
         
-        # Create a prompt for the thinking process
+        # Force progression from planning to writing if needed
+        if "plan_tutorial" in state["completed_actions"] and \
+           "write_tutorial" not in state["completed_actions"] and \
+           state["tutorial_plan"] and len(state["tutorial_plan"].get("sections", [])) > 0:
+            
+            print("\n" + "="*30 + " ENFORCED ACTION PROGRESSION " + "="*30)
+            print("Plan completed but writing not started - enforcing progression to write_tutorial")
+            print("="*80 + "\n")
+            
+            return (
+                "The tutorial plan is complete. Now I need to write the tutorial content based on this plan.",
+                "write_tutorial",
+                {
+                    "tutorial_plan": state["tutorial_plan"],
+                    "pdf_content": state["pdf_content"]
+                }
+            )
+        
+        # Create a prompt for the thinking process with enhanced workflow guidance
         prompt = f"""
         You are a tutorial generation agent working with a PDF document.
         
@@ -279,6 +313,18 @@ class SequentialReActAgent:
         Current observation: {observation}
         
         Current step: {state["current_step"]}
+        
+        Completed actions: {', '.join(state["completed_actions"])}
+        
+        TUTORIAL CREATION WORKFLOW (MUST FOLLOW IN ORDER):
+        1. Extract PDF content (extract_pdf)
+        2. Summarize PDF content (summarize_pdf)
+        3. Embed content for retrieval (embed_content)
+        4. Plan tutorial structure (plan_tutorial) - DO THIS ONLY ONCE
+        5. Write tutorial sections (write_tutorial) - MUST FOLLOW PLANNING
+        6. Format the tutorial (format_tutorial)
+        7. Improve the tutorial (improve_tutorial)
+        8. Complete the task (finish)
         
         Available tools:
         - extract_pdf: Extract content from a PDF file
@@ -290,7 +336,7 @@ class SequentialReActAgent:
         - improve_tutorial: Identify and implement improvements to the tutorial
         - finish: Complete the tutorial generation process
         
-        History: {json.dumps([h for h in state["history"]], indent=2)}
+        History: {json.dumps([h for h in state["history"][-3:]], indent=2)}
         
         Based on the current state and observation, reason step by step about what to do next.
         Your output should be in the following format:
@@ -300,15 +346,31 @@ class SequentialReActAgent:
         ActionInput: <input parameters for the tool as JSON or "None" if finishing>
         """
         
+        # Detect planning loop and return special thought if detected
+        if state.get("current_action") == "plan_tutorial" and "plan_tutorial" in state["completed_actions"]:
+            return (
+                "I've already completed the tutorial planning. I shouldn't plan again. "
+                "Based on the existing plan, I should now proceed to writing the tutorial "
+                "sections using the write_tutorial action.",
+                "write_tutorial",
+                {
+                    "tutorial_plan": state["tutorial_plan"], 
+                    "pdf_content": state["pdf_content"]
+                }
+            )
+        
+        # Use the LLM to determine the next action
         response = self.llm.invoke([
             SystemMessage(content="""
             You are an expert tutorial generation agent. You decide the next step in the tutorial generation process.
             Think carefully about what information you have and what information you still need.
-            The typical flow is: extract_pdf → summarize_pdf → embed_content → plan_tutorial → write_tutorial → format_tutorial → improve_tutorial → finish.
+            The workflow is: extract_pdf → summarize_pdf → embed_content → plan_tutorial → write_tutorial → format_tutorial → improve_tutorial → finish.
             
-            After summarizing the PDF content, you should embed the content (text, tables, and images) into the vector database for retrieval during writing.
-            
-            Only select finish when all other steps have been completed.
+            IMPORTANT RULES:
+            1. After planning is complete (plan_tutorial), you MUST proceed immediately to writing (write_tutorial)
+            2. Never call plan_tutorial more than once
+            3. You must complete all steps in order before finishing
+            4. After writing, you must format, and then improve before finishing
             
             Your output must strictly follow this format:
             Thought: <your detailed reasoning>
@@ -370,7 +432,7 @@ class SequentialReActAgent:
             if "write_tutorial" not in state["tools_results"]:
                 print("Warning: write_tutorial results not found in tools_results.")
                 # Check if there might be a direct result from writer_agent
-                if hasattr(self, 'writer_agent') and hasattr(self.writer_agent, 'last_result'):
+                if hasattr(self, 'writer_agent') and hasattr(self.writer_agent, 'last_result') and self.writer_agent.last_result:
                     print("Using last result from writer_agent instead.")
                     state["tools_results"]["write_tutorial"] = self.writer_agent.last_result
                 else:
@@ -401,6 +463,7 @@ class SequentialReActAgent:
         try:
             # Special handling for write_tutorial action which uses the Writer Agent
             if action == "write_tutorial":
+                print(f"\n{'='*30} WRITER AGENT DELEGATION {'='*30}")
                 print(f"Delegating writing task to Writer Agent...")
                 tutorial_plan = action_input.get("tutorial_plan", {})
                 pdf_content = action_input.get("pdf_content", {})
@@ -408,7 +471,17 @@ class SequentialReActAgent:
                 # Run the Writer Agent and return its result
                 print(f"Writer Agent starting with plan containing {len(tutorial_plan.get('sections', []))} sections")
                 result = self.writer_agent.run(tutorial_plan, pdf_content)
+                
+                # Store result in state and completed_actions
+                state["tools_results"]["write_tutorial"] = result
+                state["completed_actions"].add("write_tutorial")
+                self.completed_actions.add("write_tutorial")
+                
+                # Save result as last_result in writer_agent for potential later access
+                self.writer_agent.last_result = result
+                
                 print(f"Writer Agent finished with {len(result.get('sections', {}))} written sections")
+                print(f"{'='*78}\n")
                 return result
             
             # Standard tool execution for other actions
@@ -423,7 +496,10 @@ class SequentialReActAgent:
                 print("Embedding PDF content (text, tables, and images) into vector database...")
                 return tool.embed_pdf_content(action_input)
             elif action == "plan_tutorial":
-                return tool.plan(**action_input)
+                result = tool.plan(**action_input)
+                # After planning, update state for progression to writing
+                state["tutorial_plan"] = result
+                return result
             elif action == "format_tutorial":
                 return tool.format(**action_input)
             elif action == "improve_tutorial":
