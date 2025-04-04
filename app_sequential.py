@@ -3,7 +3,6 @@ import streamlit as st
 # Set page config - THIS MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(
     page_title="ReAct Tutorial Generator",
-    page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -334,7 +333,6 @@ with tab1:
                 st.write(f"**Recommendation:** {improvement.get('recommendation', '')}")
                 st.write(f"**Location:** {improvement.get('location', '')}")
                 st.divider()
-
 # Tab 2: View PDF Content
 with tab2:
     st.header("PDF Content")
@@ -353,46 +351,157 @@ with tab2:
             st.write(f"**Producer:** {metadata.get('producer', 'N/A')}")
             st.write(f"**Total Pages:** {st.session_state.pdf_content.get('total_pages', 0)}")
         
-        # Display page content
-        st.subheader("Page Content")
-        pages = st.session_state.pdf_content.get("pages", [])
+        # Add tabs for different types of content
+        content_tabs = st.tabs(["Text", "Images", "Tables"])
         
-        if pages:
-            page_selection = st.selectbox(
-                "Select page to view",
-                options=list(range(1, len(pages) + 1))
-            )
+        # Tab for text content
+        with content_tabs[0]:
+            st.subheader("Page Content")
+            pages = st.session_state.pdf_content.get("pages", [])
             
-            # Display selected page
-            selected_page = pages[page_selection - 1]
-            st.write(f"**Page {selected_page.get('page_num', '')}**")
-            
-            # Display text with scrollable container
-            with st.expander("Page Text", expanded=True):
-                st.text_area(
-                    "Content",
-                    value=selected_page.get("text", ""),
-                    height=400,
-                    disabled=True
+            if pages:
+                page_selection = st.selectbox(
+                    "Select page to view",
+                    options=list(range(1, len(pages) + 1))
                 )
-            
-            # Display images if any
-            page_images = selected_page.get("images", [])
-            if page_images:
-                st.subheader(f"Images on Page {page_selection}")
                 
-                # Create columns for images
-                img_cols = st.columns(min(3, len(page_images)))
-                for i, img in enumerate(page_images):
-                    with img_cols[i % len(img_cols)]:
-                        try:
-                            st.image(
-                                img.get("path", ""),
-                                caption=f"Image {i+1}",
-                                use_container_width=True
-                            )
-                        except:
-                            st.error(f"Could not display image {i+1}")
+                # Display selected page
+                selected_page = pages[page_selection - 1]
+                st.write(f"**Page {selected_page.get('page_num', '')}**")
+                
+                # Display text with scrollable container
+                with st.expander("Page Text", expanded=True):
+                    st.text_area(
+                        "Content",
+                        value=selected_page.get("text", ""),
+                        height=400,
+                        disabled=True
+                    )
+        
+        # Tab for images
+        with content_tabs[1]:
+            st.subheader("Images")
+            all_images = st.session_state.pdf_content.get("images", [])
+            
+            if all_images:
+                # Option to filter by page
+                all_pages = sorted(list(set([img.get("page", 0) for img in all_images])))
+                selected_page = st.selectbox(
+                    "Filter images by page",
+                    options=["All Pages"] + all_pages
+                )
+                
+                # Filter images by selected page
+                if selected_page == "All Pages":
+                    filtered_images = all_images
+                else:
+                    filtered_images = [img for img in all_images if img.get("page", 0) == selected_page]
+                
+                if filtered_images:
+                    st.write(f"Found {len(filtered_images)} images")
+                    
+                    # Create columns for images
+                    img_cols = st.columns(min(3, len(filtered_images)))
+                    for i, img in enumerate(filtered_images):
+                        with img_cols[i % len(img_cols)]:
+                            try:
+                                img_path = img.get("path", "")
+                                print(f"DEBUG: Attempting to display image: {img_path}")
+                                
+                                # Check if file exists
+                                if not os.path.exists(img_path):
+                                    print(f"DEBUG: Image file not found: {img_path}")
+                                    st.error("Image file not found")
+                                    continue
+                                    
+                                # Check if file is readable
+                                if not os.access(img_path, os.R_OK):
+                                    print(f"DEBUG: Cannot read image file (permission denied): {img_path}")
+                                    st.error("Cannot read image file (permission denied)")
+                                    continue
+                                
+                                # Try to open the file to verify it's a valid image
+                                from PIL import Image
+                                try:
+                                    with Image.open(img_path) as img_file:
+                                        img_format = img_file.format
+                                        img_size = img_file.size
+                                        print(f"DEBUG: Image format: {img_format}, size: {img_size}")
+                                        
+                                    # If we get here, the image is valid, so display it
+                                    st.image(
+                                        img_path,
+                                        caption=f"Page {img.get('page', 0)} - Image {i+1}"
+                                    )
+                                except Exception as img_err:
+                                    print(f"DEBUG: Invalid image file: {img_path} - Error: {str(img_err)}")
+                                    st.error("Invalid image file")
+                            except Exception as e:
+                                print(f"DEBUG: Image display error details: {str(e)}")
+                                st.error(f"Could not display image")
+                else:
+                    st.info(f"No images found on page {selected_page}")
+            else:
+                st.info("No images found in the document")
+        
+        # Tab for tables
+        with content_tabs[2]:
+            st.subheader("Tables")
+            all_tables = st.session_state.pdf_content.get("tables", [])
+            
+            if all_tables:
+                # Option to filter by page
+                table_pages = sorted(list(set([table.get("page", 0) for table in all_tables])))
+                selected_table_page = st.selectbox(
+                    "Filter tables by page",
+                    options=["All Pages"] + table_pages,
+                    key="table_page_filter"
+                )
+                
+                # Filter tables by selected page
+                if selected_table_page == "All Pages":
+                    filtered_tables = all_tables
+                else:
+                    filtered_tables = [table for table in all_tables if table.get("page", 0) == selected_table_page]
+                
+                if filtered_tables:
+                    st.write(f"Found {len(filtered_tables)} tables")
+                    
+                    # Display each table
+                    for i, table in enumerate(filtered_tables):
+                        with st.expander(f"Table {table.get('table_index', i+1)} - Page {table.get('page', 'N/A')}"):
+                            st.write(f"**Rows:** {table.get('rows', 'N/A')}")
+                            st.write(f"**Columns:** {table.get('columns', 'N/A')}")
+                            
+                            # Display table headers
+                            st.write("**Headers:**")
+                            st.write(", ".join(table.get("headers", [])))
+                            
+                            # Load and display the CSV
+                            try:
+                                import pandas as pd
+                                csv_path = table.get("csv_path", "")
+                                if csv_path and os.path.exists(csv_path):
+                                    df = pd.read_csv(csv_path)
+                                    st.dataframe(df, use_container_width=True)
+                                    
+                                    # Add download button
+                                    csv_filename = os.path.basename(csv_path)
+                                    with open(csv_path, "rb") as file:
+                                        st.download_button(
+                                            label="Download CSV",
+                                            data=file,
+                                            file_name=csv_filename,
+                                            mime="text/csv"
+                                        )
+                                else:
+                                    st.warning("CSV file not found")
+                            except Exception as e:
+                                st.error(f"Error displaying table: {str(e)}")
+                else:
+                    st.info(f"No tables found on page {selected_table_page}")
+            else:
+                st.info("No tables found in the document")
     else:
         st.info("No PDF content available. Please upload a PDF and generate a tutorial first.")
 

@@ -1,13 +1,15 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 import sys
 from pathlib import Path
-
-# Add parent directory to path to enable imports
-sys.path.append(str(Path(__file__).parent.parent))
-
 import os
 import json
 import re
+import logging
+
+# Add parent directory to path to enable imports
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 # Import simplified tools
 from tools.pdf_tools import SimplePDFExtractor, SimplePDFSummarizer
@@ -20,6 +22,10 @@ from tools.tutorial_tools import (
 
 # Import RAG pipeline
 from rag.rag_pipeline import RAGPipeline
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class SequentialReActAgent:
     """
@@ -35,7 +41,8 @@ class SequentialReActAgent:
         llm_model: str = "llama3.2:latest",
         collection_name: str = "tutorial_collection",
         text_embedding_model: str = "nomic-embed-text",
-        image_embedding_model: str = "llava"
+        image_embedding_model: str = "llava",
+        table_embedding_model: str = "nomic-embed-text"
     ):
         """
         Initialize the sequential ReAct agent.
@@ -45,6 +52,7 @@ class SequentialReActAgent:
             collection_name: Name of the ChromaDB collection
             text_embedding_model: Name of the text embedding model
             image_embedding_model: Name of the image embedding model
+            table_embedding_model: Name of the table embedding model
         """
         self.llm_model = llm_model
         
@@ -53,6 +61,7 @@ class SequentialReActAgent:
             collection_name=collection_name,
             text_embedding_model=text_embedding_model,
             image_embedding_model=image_embedding_model,
+            table_embedding_model=table_embedding_model,
             llm_model=llm_model
         )
         
@@ -161,7 +170,8 @@ class SequentialReActAgent:
             "tutorial": state.get("final_tutorial", ""),
             "improvements": state.get("tools_results", {}).get("improve_tutorial", {}).get("improvements", []),
             "plan": state.get("tutorial_plan", {}),
-            "extracted_knowledge": state.get("pdf_summary", {})
+            "extracted_knowledge": state.get("pdf_summary", {}),
+            "pdf_content": state.get("pdf_content", {})
         }
         
         # If we reached max iterations without finishing, add a note
@@ -191,10 +201,15 @@ class SequentialReActAgent:
             result = state["tools_results"][current_step]
             
             if current_step == "extract_pdf":
-                return f"PDF extraction complete. Extracted {len(result.get('pages', []))} pages and {len(result.get('images', []))} images."
+                tables_info = f" and {len(result.get('tables', []))} tables" if result.get('tables') else ""
+                return f"PDF extraction complete. Extracted {len(result.get('pages', []))} pages, {len(result.get('images', []))} images{tables_info}."
             
             elif current_step == "summarize_pdf":
-                return f"PDF summarization complete. Main topics: {', '.join(result.get('overall_summary', {}).get('main_topics', ['None'])[:3])}"
+                tables_summary = ""
+                if result.get("tables_summary"):
+                    tables_summary = f" Tables summary: {result.get('tables_summary', {}).get('summary', 'No table summary available.')}"
+                
+                return f"PDF summarization complete. Main topics: {', '.join(result.get('overall_summary', {}).get('main_topics', ['None'])[:3])}.{tables_summary}"
             
             elif current_step == "plan_tutorial":
                 sections = result.get("sections", [])
@@ -299,6 +314,15 @@ class SequentialReActAgent:
         elif action == "summarize_pdf":
             action_input = state["pdf_content"]
         elif action == "plan_tutorial":
+            # Check if pdf_summary is None or has an error
+            if not state["pdf_summary"]:
+                print("Warning: pdf_summary is None, cannot proceed with planning. Retrying summarization.")
+                # Override the action to retry summarization
+                return thought, "summarize_pdf", state["pdf_content"]
+            elif "error" in state["pdf_summary"]:
+                print(f"Warning: pdf_summary contains error: {state['pdf_summary']['error']}. Retrying summarization.")
+                return thought, "summarize_pdf", state["pdf_content"]
+            
             action_input = {
                 "summarized_content": state["pdf_summary"],
                 "tutorial_goal": state["goal"]
@@ -351,6 +375,6 @@ class SequentialReActAgent:
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
-            print(f"Error executing {action}: {e}")
-            print(error_trace)
+            logger.error(f"Error executing {action}: {e}")
+            logger.error(error_trace)
             return {"error": str(e), "traceback": error_trace}
